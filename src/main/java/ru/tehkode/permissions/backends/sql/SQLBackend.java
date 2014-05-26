@@ -18,7 +18,7 @@
  */
 package ru.tehkode.permissions.backends.sql;
 
-import org.apache.commons.dbcp2.BasicDataSource;
+import org.apache.commons.dbcp.BasicDataSource;
 import org.bukkit.configuration.ConfigurationSection;
 import ru.tehkode.permissions.PermissionManager;
 import ru.tehkode.permissions.PermissionsGroupData;
@@ -54,8 +54,7 @@ public class SQLBackend extends PermissionBackend {
 	protected Map<String, List<String>> worldInheritanceCache = new HashMap<>();
 	private Map<String, Object> tableNames;
 	private BasicDataSource ds;
-	private String dbDriver;
-	private final ExecutorService executor;
+	protected final String dbDriver;
 
 	public SQLBackend(PermissionManager manager, ConfigurationSection config) throws PermissionBackendException {
 		super(manager, config);
@@ -72,11 +71,17 @@ public class SQLBackend extends PermissionBackend {
 		dbDriver = dbUri.split(":", 2)[0];
 
 		this.ds = new BasicDataSource();
+		String driverClass = getDriverClass(dbDriver);
+		if (driverClass != null) {
+			this.ds.setDriverClassName(driverClass);
+		}
 		this.ds.setUrl("jdbc:" + dbUri);
 		this.ds.setUsername(dbUser);
 		this.ds.setPassword(dbPassword);
-		this.ds.setMaxTotal(20);
-		this.ds.setMaxWaitMillis(200); // 4 ticks
+		this.ds.setMaxActive(20);
+		this.ds.setMaxWait(200); // 4 ticks
+		this.ds.setValidationQuery("SELECT 1 AS dbcp_validate");
+		this.ds.setTestOnBorrow(true);
 
 		try (SQLConnection conn = getSQL()) {
 			conn.checkConnection();
@@ -89,9 +94,19 @@ public class SQLBackend extends PermissionBackend {
 
 		getManager().getLogger().info("Successfully connected to SQL database");
 
-		executor = Executors.newSingleThreadExecutor();
 		this.setupAliases();
 		this.deployTables();
+	}
+
+	protected static String getDriverClass(String alias) {
+		if (alias.equals("mysql")) {
+			return "com.mysql.jdbc.Driver";
+		} else if (alias.equals("sqlite")) {
+			return "org.sqlite.JDBC";
+		} else if (alias.matches("postgres?")) {
+			return "org.postgresql.Driver";
+		}
+		return null;
 	}
 
 	public SQLConnection getSQL() throws SQLException {
@@ -116,12 +131,12 @@ public class SQLBackend extends PermissionBackend {
 
 	@Override
 	public PermissionsUserData getUserData(String name) {
-		return new CachingUserData(new SQLData(name, SQLData.Type.USER, this), executor, new Object());
+		return new CachingUserData(new SQLData(name, SQLData.Type.USER, this), getExecutor(), new Object());
 	}
 
 	@Override
 	public PermissionsGroupData getGroupData(String name) {
-		return new CachingGroupData(new SQLData(name, SQLData.Type.GROUP, this), executor, new Object());
+		return new CachingGroupData(new SQLData(name, SQLData.Type.GROUP, this), getExecutor(), new Object());
 	}
 
 	@Override
@@ -129,7 +144,7 @@ public class SQLBackend extends PermissionBackend {
 		try (SQLConnection conn = getSQL()) {
 			ResultSet res = conn.prepAndBind("SELECT `id` FROM `{permissions_entity}` WHERE `type` = ? AND `name` = ?", SQLData.Type.USER.ordinal(), userName).executeQuery();
 			return res.next();
-		} catch (SQLException e) {
+		} catch (SQLException | IOException e) {
 			return false;
 		}
 	}
@@ -139,39 +154,16 @@ public class SQLBackend extends PermissionBackend {
 		try (SQLConnection conn = getSQL()) {
 			ResultSet res = conn.prepAndBind("SELECT `id` FROM `{permissions_entity}` WHERE `type` = ? AND `name` = ?", SQLData.Type.GROUP.ordinal(), group).executeQuery();
 			return res.next();
-		} catch (SQLException e) {
+		} catch (SQLException | IOException e) {
 			return false;
 		}
 	}
 
 	@Override
-	public Set<String> getDefaultGroupNames(String worldName) {
-		try (SQLConnection conn = getSQL()) {
-			ResultSet result;
-
-			if (worldName == null) {
-				result = conn.prepAndBind("SELECT `name` FROM `{permissions_entity}` WHERE `type` = ? AND `default` = 1", SQLData.Type.GROUP.ordinal()).executeQuery();
-			} else {
-				result = conn.prepAndBind("SELECT `name` FROM `{permissions}` WHERE `permission` = 'default' AND `value` = 'true' AND `type` = ? AND `world` = ?",
-						SQLData.Type.GROUP.ordinal(), worldName).executeQuery();
-			}
-			Set<String> ret = new HashSet<>();
-			while (result.next()) {
-				ret.add(result.getString("name"));
-			}
-
-			return ret;
-		} catch (SQLException e) {
-			throw new RuntimeException(e);
-		}
-	}
-
-
-	@Override
 	public Collection<String> getGroupNames() {
 		try (SQLConnection conn = getSQL()) {
 			return SQLData.getEntitiesNames(conn, SQLData.Type.GROUP, false);
-		} catch (SQLException e) {
+		} catch (SQLException | IOException e) {
 			throw new RuntimeException(e);
 		}
 	}
@@ -180,7 +172,7 @@ public class SQLBackend extends PermissionBackend {
 	public Collection<String> getUserIdentifiers() {
 		try (SQLConnection conn = getSQL()) {
 			return SQLData.getEntitiesNames(conn, SQLData.Type.USER, false);
-		} catch (SQLException e) {
+		} catch (SQLException | IOException e) {
 			throw new RuntimeException(e);
 		}
 	}
@@ -193,7 +185,7 @@ public class SQLBackend extends PermissionBackend {
 			while (set.next()) {
 				ret.add(set.getString("value"));
 			}
-		} catch (SQLException e) {
+		} catch (SQLException | IOException e) {
 			throw new RuntimeException(e);
 		}
 		return Collections.unmodifiableSet(ret);
@@ -269,7 +261,7 @@ public class SQLBackend extends PermissionBackend {
 				}
 
 				this.worldInheritanceCache.put(world, Collections.unmodifiableList(worldParents));
-			} catch (SQLException e) {
+			} catch (SQLException | IOException e) {
 				throw new RuntimeException(e);
 			}
 		}
@@ -290,7 +282,7 @@ public class SQLBackend extends PermissionBackend {
 				}
 			}
 			return Collections.unmodifiableMap(ret);
-		} catch (SQLException e) {
+		} catch (SQLException |IOException e) {
 			return Collections.unmodifiableMap(worldInheritanceCache);
 		}
 	}
@@ -313,7 +305,7 @@ public class SQLBackend extends PermissionBackend {
 
 			this.worldInheritanceCache.put(worldName, parentWorlds);
 
-		} catch (SQLException e) {
+		} catch (SQLException | IOException e) {
 			throw new RuntimeException(e);
 		}
 	}
@@ -323,8 +315,10 @@ public class SQLBackend extends PermissionBackend {
 	}
 
 	@Override
+	public void setPersistent(boolean persist) {}
+
+	@Override
 	public void close() throws PermissionBackendException {
-		executor.shutdown();
 		if (ds != null) {
 			try {
 				ds.close();
@@ -332,10 +326,6 @@ public class SQLBackend extends PermissionBackend {
 				throw new PermissionBackendException("Error while closing", e);
 			}
 		}
-		try {
-			executor.awaitTermination(4 * 50, TimeUnit.MILLISECONDS);
-		} catch (InterruptedException e) {
-			throw new PermissionBackendException(e);
-		}
+		super.close();
 	}
 }

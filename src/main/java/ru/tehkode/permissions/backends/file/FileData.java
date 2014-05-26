@@ -67,6 +67,7 @@ public class FileData implements PermissionsUserData, PermissionsGroupData {
 		section = this.config.createSection(nodePath);
 		this.entityName = entityName;
 		this.config.set(nodePath, null);
+		this.virtual = true; // Make sure
 
 		return section;
 
@@ -148,19 +149,18 @@ public class FileData implements PermissionsUserData, PermissionsGroupData {
 
 	@Override
 	public String getOption(String option, String worldName) {
-		if (option.equals("prefix") || option.equals("suffix")) {
-			return this.node.getString(formatPath(worldName, option));
-		} else {
-			return this.node.getString(formatPath(worldName, "options", option));
+		String ret = this.node.getString(formatPath(worldName, "options", option));
+		if (ret == null && (option.equals("prefix") || option.equals("suffix"))) {
+			ret = this.node.getString(formatPath(worldName, option));
 		}
+		return ret;
 	}
 
 	@Override
 	public void setOption(String option, String value, String worldName) {
+		this.node.set(formatPath(worldName, "options", option), value);
 		if (option.equals("prefix") || option.equals("suffix")) {
-			this.node.set(formatPath(worldName, option), value);
-		} else {
-			this.node.set(formatPath(worldName, "options", option), value);
+			this.node.set(formatPath(worldName, option), null); // Delete old-style prefix/suffix
 		}
 		save();
 	}
@@ -180,7 +180,7 @@ public class FileData implements PermissionsUserData, PermissionsGroupData {
 		putIfNotNull(worldOptions, "suffix", this.node.getString(formatPath(worldName, "suffix")));
 
 		if (optionsSection == null) {
-			return Collections.emptyMap();
+			return Collections.unmodifiableMap(worldOptions);
 		}
 
 		return Collections.unmodifiableMap(collectOptions(worldOptions, optionsSection));
@@ -240,6 +240,12 @@ public class FileData implements PermissionsUserData, PermissionsGroupData {
 	@Override
 	public List<String> getParents(String worldName) {
 		List<String> parents = this.node.getStringList(formatPath(worldName, parentPath));
+		for (Iterator<String> it = parents.iterator(); it.hasNext();) {
+			final String test = it.next();
+			if (test == null || test.isEmpty()) {
+				it.remove();
+			}
+		}
 
 		if (parents == null || parents.isEmpty()) {
 			return Collections.emptyList();
@@ -261,16 +267,12 @@ public class FileData implements PermissionsUserData, PermissionsGroupData {
 
 	@Override
 	public boolean isDefault(String world) {
-		return world == null ? this.node.getBoolean("default") : this.node.getBoolean(formatPath(world, "default"));
+		return this.node.getBoolean(formatPath(world, "default"));
 	}
 
 	@Override
 	public void setDefault(boolean def, String world) {
-		if (world == null) {
-			this.node.set("default", def);
-		} else {
-			this.node.set(formatPath(world, "default"), def);
-		}
+		this.node.set(formatPath(world, "default"), def);
 		save();
 	}
 

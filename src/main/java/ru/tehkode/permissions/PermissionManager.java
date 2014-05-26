@@ -89,6 +89,7 @@ public class PermissionManager {
 		return plugin;
 	}
 
+
 	private class RemoteEventListener implements Listener {
 		@EventHandler(priority = EventPriority.LOWEST)
 		public void onEntityEvent(PermissionEntityEvent event) {
@@ -123,7 +124,7 @@ public class PermissionManager {
 			if (reloadEntity) {
 				switch (event.getType()) {
 					case USER:
-						users.remove(event.getEntityIdentifier());
+						resetUser(event.getEntityIdentifier());
 						break;
 					case GROUP:
 						PermissionGroup group = groups.remove(event.getEntityIdentifier());
@@ -156,8 +157,8 @@ public class PermissionManager {
 			}
 
 			try {
-				if (backend != null) {
-					backend.reload();
+				if (getBackend() != null) {
+					getBackend().reload();
 				}
 				clearCache();
 			} catch (PermissionBackendException e) {
@@ -256,6 +257,17 @@ public class PermissionManager {
 		}
 	}
 
+
+	/**
+	 * Update a user in cache. This method is thread-safe and should only be called in async phases of login.
+	 *
+	 * @param ident The user identifier
+	 * @param fallbackName Fallback name for user
+	 */
+	public void cacheUser(String ident, String fallbackName) {
+		getUser(ident, fallbackName, true);
+	}
+
 	/**
 	 * Return object of specified player
 	 *
@@ -268,11 +280,16 @@ public class PermissionManager {
 
 	public PermissionUser getUser(UUID uid) {
 		final String identifier = uid.toString();
-		if (users.containsKey(identifier.toLowerCase())) {
+		if (users.containsKey(identifier)) {
 			return getUser(identifier, null, false);
 		}
-		OfflinePlayer ply = plugin.getServer().getPlayer(uid); // to make things cheaper, we're just checking online players (can be improved later on)
-															   // Also, only online players are really necessary to convert to proper names
+		OfflinePlayer ply = null;
+		try {
+			ply = plugin.getServer().getPlayer(uid); // to make things cheaper, we're just checking online players (can be improved later on)
+			// Also, only online players are really necessary to convert to proper names
+		} catch (NoSuchMethodError e) {
+			// Old craftbukkit, guess we won't have a fallback name. Much shame.
+		}
 		String fallbackName = null;
 		if (ply != null) {
 			fallbackName = ply.getName();
@@ -281,7 +298,7 @@ public class PermissionManager {
 	}
 
 	private PermissionUser getUser(String identifier, String fallbackName, boolean store) {
-		PermissionUser user = users.get(identifier.toLowerCase());
+		PermissionUser user = users.get(identifier);
 
 		if (user != null) {
 			return user;
@@ -308,7 +325,7 @@ public class PermissionManager {
 			user = new PermissionUser(identifier, data, this);
 			user.initialize();
 			if (store) {
-				this.users.put(identifier.toLowerCase(), user);
+				this.users.put(identifier, user);
 			}
 		} else {
 			throw new IllegalStateException("User " + identifier + " is null");
@@ -328,7 +345,7 @@ public class PermissionManager {
 			users.add(getUser(p));
 		}
 		for (String name : backend.getUserIdentifiers()) {
-			users.add(getUser(name));
+			users.add(getUser(name, null, false));
 		}
 		return Collections.unmodifiableSet(users);
 	}
@@ -560,13 +577,9 @@ public class PermissionManager {
 	 */
 	public List<PermissionGroup> getDefaultGroups(String worldName) {
 		List<PermissionGroup> defaults = new LinkedList<>();
-		for (String name : this.getBackend().getDefaultGroupNames(worldName)) {
-			defaults.add(getGroup(name));
-		}
-
-		if (worldName != null) {
-			for (String name : this.getBackend().getDefaultGroupNames(null)) {
-				defaults.add(getGroup(name));
+		for (PermissionGroup grp : getGroupList()) {
+			if (grp.isDefault(worldName) || (worldName != null && grp.isDefault(null))) {
+				defaults.add(grp);
 			}
 		}
 
@@ -647,6 +660,9 @@ public class PermissionManager {
 	 */
 	public void setWorldInheritance(String world, List<String> parentWorlds) {
 		backend.setWorldInheritance(world, parentWorlds);
+		for (PermissionUser user : getActiveUsers()) { // Clear user cache
+			user.clearCache();
+		}
 		this.callEvent(PermissionSystemEvent.Action.WORLDINHERITANCE_CHANGED);
 	}
 
@@ -717,8 +733,10 @@ public class PermissionManager {
 
 	public void end() {
 		try {
-			this.backend.close();
-			this.backend = null;
+			if (this.backend != null) {
+				this.backend.close();
+				this.backend = null;
+			}
 			reset();
 		} catch (PermissionBackendException ignore) {
 			// Ignore because we're shutting down so who cares

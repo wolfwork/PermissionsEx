@@ -2,7 +2,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>ru.tehkode</groupId>
     <artifactId>PermissionsEx</artifactId>
-    <version>1.21</version>
+    <version>1.21.5-SNAPSHOT</version>
     <name>PermissionsEx</name>
     <url>https://github.com/PEXPlugins/PermissionsEx</url>
     <properties>
@@ -24,10 +24,6 @@
         <resources>
             <resource>
                 <directory>${project.basedir}/src/main/resources</directory>
-                <!--<targetPath>/</targetPath>-->
-                <includes>
-                    <include>**</include>
-                </includes>
                 <filtering>true</filtering>
             </resource>
         </resources>
@@ -50,6 +46,19 @@
                   <goal>shade</goal>
                 </goals>
                 <phase>package</phase>
+                <configuration>
+                  <createDependencyReducedPom>false</createDependencyReducedPom>
+                  <relocations>
+                    <relocation>
+                      <pattern>net.gravitydevelopment.updater</pattern>
+                      <shadedPattern>ru.tehkode.libs.net.gravitydevelopment.updater</shadedPattern>
+                    </relocation>
+                    <relocation>
+                      <pattern>org.apache</pattern>
+                      <shadedPattern>ru.tehkode.libs.org.apache</shadedPattern>
+                    </relocation>
+                  </relocations>
+                </configuration>
               </execution>
             </executions>
           </plugin>
@@ -79,13 +88,36 @@
               </execution>
             </executions>
           </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>animal-sniffer-maven-plugin</artifactId>
+            <version>1.11</version>
+            <configuration>
+              <ignores>
+                <ignore>java.lang.Throwable</ignore>
+              </ignores>
+              <signature>
+                <groupId>org.codehaus.mojo.signature</groupId>
+                <artifactId>java16</artifactId>
+                <version>1.0</version>
+              </signature>
+            </configuration>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+                <phase>test</phase>
+              </execution>
+            </executions>
+          </plugin>
         </plugins>
     </build>
     <dependencies>
         <dependency>
             <groupId>org.bukkit</groupId>
             <artifactId>bukkit</artifactId>
-            <version>1.7.5-R0.1-SNAPSHOT</version>
+            <version>1.7.8-R0.1-SNAPSHOT</version>
             <type>jar</type>
             <scope>provided</scope>
         </dependency>
@@ -109,9 +141,14 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-dbcp2</artifactId>
-            <version>2.0</version>
+            <groupId>commons-dbcp</groupId>
+            <artifactId>commons-dbcp</artifactId>
+            <version>1.4</version>
+        </dependency>
+        <dependency>
+            <groupId>net.gravitydevelopment.updater</groupId>
+            <artifactId>updater</artifactId>
+            <version>LATEST</version>
         </dependency>
     </dependencies>
     <repositories>
@@ -122,6 +159,10 @@
         <repository>
             <id>pex-repo</id>
             <url>http://pex-repo.zachsthings.com</url>
+        </repository>
+        <repository>
+            <id>gravity-repo</id>
+            <url>http://repo.gravitydevelopment.net</url>
         </repository>
     </repositories>
 </project>

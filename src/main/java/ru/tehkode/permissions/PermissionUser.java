@@ -64,6 +64,20 @@ public class PermissionUser extends PermissionEntity {
 	}
 
 	@Override
+	public String getName() {
+		String name = getOwnOption("name", null, null);
+		if (name == null) {
+			Player player = getPlayer();
+			if (player != null) {
+				name = player.getName();
+				setOption("name", name);
+				return name;
+			}
+		}
+		return super.getName();
+	}
+
+	@Override
 	public Type getType() {
 		return Type.USER;
 	}
@@ -460,7 +474,7 @@ public class PermissionUser extends PermissionEntity {
 			promoterRank = promoter.getRank(ladderName);
 
 			if (promoterRank >= rank) {
-				throw new RankingException("Promoter don't have high enough rank to change " + this.getIdentifier() + "'s rank", this, promoter);
+				throw new RankingException("Promoter don't have high enough rank to change " + this.getIdentifier() + "/" + getName() + "'s rank", this, promoter);
 			}
 		}
 
@@ -587,8 +601,8 @@ public class PermissionUser extends PermissionEntity {
 	 * @return
 	 */
 	@Deprecated
-	public List<PermissionGroup> getGroups() {
-		return getParents();
+	public PermissionGroup[] getGroups() {
+		return getParents().toArray(new PermissionGroup[0]);
 	}
 
 	/**
@@ -598,8 +612,8 @@ public class PermissionUser extends PermissionEntity {
 	 * @return PermissionGroup groups
 	 */
 	@Deprecated
-	public List<PermissionGroup> getGroups(String worldName) {
-		return getParents(worldName);
+	public PermissionGroup[] getGroups(String worldName) {
+		return getParents(worldName).toArray(new PermissionGroup[0]);
 	}
 
 	/**
@@ -608,8 +622,8 @@ public class PermissionUser extends PermissionEntity {
 	 * @return
 	 */
 	@Deprecated
-	public List<String> getGroupNames() {
-		return getParentIdentifiers();
+	public String[] getGroupNames() {
+		return getParentIdentifiers().toArray(new String[0]);
 	}
 
 	/**
@@ -618,8 +632,8 @@ public class PermissionUser extends PermissionEntity {
 	 * @return String array of user's group names
 	 */
 	@Deprecated
-	public List<String> getGroupNames(String worldName) {
-		return getParentIdentifiers(worldName);
+	public String[] getGroupNames(String worldName) {
+		return getParentIdentifiers(worldName).toArray(new String[0]);
 	}
 
 	/**
@@ -628,13 +642,13 @@ public class PermissionUser extends PermissionEntity {
 	 * @param groups array of parent group names
 	 */
 	@Deprecated
-	public void setGroups(List<String> groups, String worldName) {
-		setParentsIdentifier(groups, worldName);
+	public void setGroups(String[] groups, String worldName) {
+		setParentsIdentifier(Arrays.asList(groups), worldName);
 	}
 
 	@Deprecated
-	public void setGroups(List<String> groups) {
-		setParentsIdentifier(groups);
+	public void setGroups(String[] groups) {
+		setParentsIdentifier(Arrays.asList(groups));
 	}
 
 	/**
@@ -643,12 +657,12 @@ public class PermissionUser extends PermissionEntity {
 	 * @param parentGroups array of parent group objects
 	 */
 	@Deprecated
-	public void setGroupObjects(List<PermissionGroup> parentGroups, String worldName) {
-		setParents(parentGroups, worldName);
+	public void setGroups(PermissionGroup[] parentGroups, String worldName) {
+		setParents(Arrays.asList(parentGroups), worldName);
 	}
 
 	@Deprecated
-	public void setGroupObjects(List<PermissionGroup> parentGroups) {
-		setParents(parentGroups);
+	public void setGroups(PermissionGroup[] parentGroups) {
+		setParents(Arrays.asList(parentGroups));
 	}
 }

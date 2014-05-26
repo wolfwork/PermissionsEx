@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Logger;
 
 import org.bukkit.Bukkit;
 import org.bukkit.permissions.Permission;
@@ -44,7 +43,6 @@ public abstract class PermissionEntity {
 
 	protected PermissionManager manager;
 	private String name;
-	protected boolean virtual = true;
 	protected Map<String, List<String>> timedPermissions = new ConcurrentHashMap<>();
 	protected Map<String, Long> timedPermissionsTime = new ConcurrentHashMap<>();
 	protected boolean debugMode = false;
@@ -211,7 +209,7 @@ public abstract class PermissionEntity {
 		String expression = getMatchingExpression(permission, world);
 
 		if (this.isDebug()) {
-			Logger.getLogger("Minecraft").info("User " + this.getIdentifier() + " checked for \"" + permission + "\", " + (expression == null ? "no permission found" : "\"" + expression + "\" found"));
+			manager.getLogger().info("User " + this.getIdentifier() + " checked for \"" + permission + "\", " + (expression == null ? "no permission found" : "\"" + expression + "\" found"));
 		}
 
 		return explainExpression(expression);
@@ -243,7 +241,18 @@ public abstract class PermissionEntity {
 	 * @return Map with world name as key and permissions array as value
 	 */
 	public Map<String, List<String>> getAllPermissions() {
-		return getData().getPermissionsMap();
+		Map<String, List<String>> ret = new HashMap<>(getData().getPermissionsMap());
+		for (Map.Entry<String, List<String>> timedEnt : timedPermissions.entrySet()) {
+			String worldKey = timedEnt.getKey().isEmpty() ? null : timedEnt.getKey();
+			List<String> addTo = new LinkedList<>();
+			addTo.addAll(timedEnt.getValue());
+			List<String> permanentPerms = ret.get(worldKey);
+			if (permanentPerms != null) {
+				addTo.addAll(permanentPerms);
+			}
+			ret.put(worldKey, Collections.unmodifiableList(addTo));
+		}
+		return Collections.unmodifiableMap(ret);
 	}
 
 	protected List<String> getPermissionsInternal(String worldName, final boolean filterNonInheritable) {
@@ -259,7 +268,7 @@ public abstract class PermissionEntity {
 					}
 
 					ret.add(perm);
-					getInheritedChildPermissions(perm, ret);
+					entity.getInheritedChildPermissions(perm, ret);
 				}
 
 				for (String perm : entity.getTimedPermissions(world)) {
@@ -268,7 +277,7 @@ public abstract class PermissionEntity {
 					}
 
 					ret.add(perm);
-					getInheritedChildPermissions(perm, ret);
+					entity.getInheritedChildPermissions(perm, ret);
 				}
 				return null;
 			}
@@ -339,6 +348,7 @@ public abstract class PermissionEntity {
 	 * @param worldName      World name to remove permission for
 	 */
 	public void removePermission(String permission, String worldName) {
+		removeTimedPermission(permission, worldName);
 		List<String> permissions = new LinkedList<>(this.getOwnPermissions(worldName));
 		permissions.remove(permission);
 		this.setPermissions(permissions, worldName);
@@ -608,7 +618,7 @@ public abstract class PermissionEntity {
 	 * @return true if entity is only in-memory
 	 */
 	public boolean isVirtual() {
-		return this.virtual;
+		return getData().isVirtual();
 	}
 
 	/**
@@ -711,7 +721,7 @@ public abstract class PermissionEntity {
 		}
 
 		this.timedPermissions.get(world).remove(permission);
-		this.timedPermissions.remove(world + ":" + permission);
+		this.timedPermissionsTime.remove(world + ":" + permission);
 
 		clearCache();
 		this.callEvent(PermissionEntityEvent.Action.PERMISSIONS_CHANGED);

@@ -18,12 +18,21 @@
  */
 package ru.tehkode.permissions.bukkit;
 
+import java.lang.reflect.Field;
+import java.util.Calendar;
+import java.util.GregorianCalendar;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import net.gravitydevelopment.updater.Updater;
 import org.bukkit.ChatColor;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
@@ -31,34 +40,25 @@ import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.plugin.PluginLogger;
 import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
-
-import ru.tehkode.permissions.backends.PermissionBackend;
 import ru.tehkode.permissions.PermissionManager;
 import ru.tehkode.permissions.PermissionUser;
-import ru.tehkode.permissions.backends.memory.MemoryBackend;
+import ru.tehkode.permissions.backends.MultiBackend;
+import ru.tehkode.permissions.backends.PermissionBackend;
 import ru.tehkode.permissions.backends.file.FileBackend;
+import ru.tehkode.permissions.backends.memory.MemoryBackend;
 import ru.tehkode.permissions.backends.sql.SQLBackend;
-import ru.tehkode.permissions.bukkit.commands.GroupCommands;
-import ru.tehkode.permissions.bukkit.commands.PromotionCommands;
-import ru.tehkode.permissions.bukkit.commands.UserCommands;
-import ru.tehkode.permissions.bukkit.commands.UtilityCommands;
-import ru.tehkode.permissions.bukkit.commands.WorldCommands;
+import ru.tehkode.permissions.bukkit.commands.*;
 import ru.tehkode.permissions.bukkit.regexperms.RegexPermissions;
 import ru.tehkode.permissions.commands.CommandsManager;
 import ru.tehkode.permissions.exceptions.PermissionBackendException;
 import ru.tehkode.permissions.exceptions.PermissionsNotAvailable;
 import ru.tehkode.utils.StringUtils;
 
-import java.lang.reflect.Field;
-import java.util.Calendar;
-import java.util.GregorianCalendar;
-import java.util.logging.Level;
-import java.util.logging.LogRecord;
-
 /**
  * @author code
  */
 public class PermissionsEx extends JavaPlugin {
+	private static final int BUKKITDEV_ID = 31279;
 	protected PermissionManager permissionsManager;
 	protected CommandsManager commandsManager;
 	private PermissionsExConfig config;
@@ -83,6 +83,7 @@ public class PermissionsEx extends JavaPlugin {
 		PermissionBackend.registerBackendAlias("sql", SQLBackend.class);
 		PermissionBackend.registerBackendAlias("file", FileBackend.class);
 		PermissionBackend.registerBackendAlias("memory", MemoryBackend.class);
+		PermissionBackend.registerBackendAlias("multi", MultiBackend.class);
 
 	}
 
@@ -157,6 +158,19 @@ public class PermissionsEx extends JavaPlugin {
 				this.permissionsManager = new PermissionManager(this);
 			}
 
+			try {
+				OfflinePlayer.class.getMethod("getUniqueId");
+			} catch (NoSuchMethodException e) {
+				getLogger().severe("============================================================================================");
+				getLogger().severe("As of version 1.21, PEX requires a version of Bukkit with UUID support to function (>1.7.5). Please download a non-UUID version of PermissionsEx to continue.");
+				getLogger().severe("Beginning reversion of potential invalid UUID conversion");
+				getPermissionsManager().getBackend().revertUUID();
+				getLogger().severe("Reversion complete, disabling. PermissionsEx will not work until downgrade is complete");
+				getLogger().severe("============================================================================================");
+				getPluginLoader().disablePlugin(this);
+				return;
+			}
+
 			// Register commands
 			this.commandsManager.register(new UserCommands());
 			this.commandsManager.register(new GroupCommands());
@@ -168,7 +182,7 @@ public class PermissionsEx extends JavaPlugin {
 			PlayerEventsListener cleaner = new PlayerEventsListener();
 			this.getServer().getPluginManager().registerEvents(cleaner, this);
 
-			//register service
+			// Register service
 			this.getServer().getServicesManager().register(PermissionManager.class, this.permissionsManager, this, ServicePriority.Normal);
 			regexPerms = new RegexPermissions(this);
 			superms = new SuperpermsListener(this);
@@ -177,6 +191,64 @@ public class PermissionsEx extends JavaPlugin {
 
 			// Start timed permissions cleaner timer
 			this.permissionsManager.initTimer();
+			if (config.updaterEnabled()) {
+				final Updater updater = new Updater(this, BUKKITDEV_ID, this.getFile(), Updater.UpdateType.DEFAULT, false) {
+					/**
+					 * Customized update check function.
+					 * If update is only a difference in minor version (supermajor.major.minor)
+					 * @param localVerString Local version in string form
+					 * @param remoteVerString Remote version in string format
+					 * @return
+					 */
+					@Override
+					public boolean shouldUpdate(String localVerString, String remoteVerString) {
+						if (localVerString.equals(remoteVerString)) { // Versions are equal
+							return false;
+						}
+
+						if (config.alwaysUpdate()) {
+							return true;
+						}
+
+						if (localVerString.endsWith("-SNAPSHOT") || remoteVerString.endsWith("-SNAPSHOT")) { // Don't update when a dev build is involved
+							return false;
+						}
+
+						String[] localVer = localVerString.split("\\.");
+						int localSuperMajor = Integer.parseInt(localVer[0]);
+						int localMajor = localVer.length > 1 ? Integer.parseInt(localVer[1]) : 0;
+						int localMinor = localVer.length > 2 ? Integer.parseInt(localVer[2]) : 0;
+						String[] remoteVer = remoteVerString.split("\\.");
+						int remoteSuperMajor = Integer.parseInt(remoteVer[0]);
+						int remoteMajor = remoteVer.length > 1 ? Integer.parseInt(remoteVer[1]) : 0;
+						int remoteMinor = remoteVer.length > 2 ? Integer.parseInt(remoteVer[2]) : 0;
+
+						if (localSuperMajor > remoteSuperMajor
+								|| (localSuperMajor == remoteSuperMajor && localMajor > remoteMajor)
+								|| (localSuperMajor == remoteSuperMajor && localMajor == remoteMajor && localMinor >= remoteMinor)) {
+							return false; // Local version is newer or same as remote version
+						}
+						if (localSuperMajor == remoteSuperMajor && localMajor == remoteMajor) {
+							// Versions aren't equal but major version is, this is a minor update
+							return true;
+						} else {
+							getLogger().warning("An update to " + getDescription().getName() + " version " + remoteVerString + " is available to download from" +
+									" http://dev.bukkit.org/bukkit-plugins/permissionsex/. Please review the changes and update as soon as possible!");
+							return false;
+						}
+
+					}
+				};
+				getServer().getScheduler().runTaskAsynchronously(this, new Runnable() {
+					@Override
+					public void run() {
+						switch (updater.getResult()) {
+							case SUCCESS:
+								getLogger().info("An update to " + updater.getLatestName() + " was downloaded and will be applied on next server launch.");
+						}
+					}
+				});
+			}
 		} catch (PermissionBackendException e) {
 			logBackendExc(e);
 			this.getPluginLoader().disablePlugin(this);
@@ -191,14 +263,17 @@ public class PermissionsEx extends JavaPlugin {
 		try {
 			if (this.permissionsManager != null) {
 				this.permissionsManager.end();
+				this.getServer().getServicesManager().unregister(PermissionManager.class, this.permissionsManager);
+				this.permissionsManager = null;
 			}
 
-			this.getServer().getServicesManager().unregister(PermissionManager.class, this.permissionsManager);
 			if (this.regexPerms != null) {
 				this.regexPerms.onDisable();
+				this.regexPerms = null;
 			}
 			if (this.superms != null) {
 				this.superms.onDisable();
+				this.superms = null;
 			}
 
 		} catch (Throwable t) {
@@ -281,11 +356,18 @@ public class PermissionsEx extends JavaPlugin {
 	}
 
 	public class PlayerEventsListener implements Listener {
+		@EventHandler(priority = EventPriority.MONITOR)
+		public void onAsyncPlayerPreLogin(AsyncPlayerPreLoginEvent event) {
+			if (event.getLoginResult() == AsyncPlayerPreLoginEvent.Result.ALLOWED) {
+				getPermissionsManager().cacheUser(event.getUniqueId().toString(), event.getName());
+			}
+		}
+
 		@EventHandler
 		public void onPlayerLogin(PlayerJoinEvent event) {
 			try {
 				PermissionUser user = getPermissionsManager().getUser(event.getPlayer());
-				if (!user.isVirtual()) { // Update name only if user exists in config
+				if (!user.isVirtual() && !event.getPlayer().getName().equals(user.getOption("name"))) { // Update name only if user exists in config
 					user.setOption("name", event.getPlayer().getName());
 				}
 				if (!config.shouldLogPlayers()) {

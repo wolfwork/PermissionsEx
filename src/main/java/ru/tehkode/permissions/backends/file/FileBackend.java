@@ -31,9 +31,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * @author code
@@ -42,12 +40,11 @@ public class FileBackend extends PermissionBackend {
 	public final static char PATH_SEPARATOR = '/';
 	public FileConfig permissions;
 	public File permissionsFile;
-	private final ExecutorService executor;
+	private final Map<String, List<String>> worldInheritanceCache = new ConcurrentHashMap<>();
 	private final Object lock = new Object();
 
 	public FileBackend(PermissionManager manager, ConfigurationSection config) throws PermissionBackendException {
 		super(manager, config);
-		this.executor = Executors.newSingleThreadExecutor();
 		String permissionFilename = getConfig().getString("file");
 
 		// Default settings
@@ -74,9 +71,18 @@ public class FileBackend extends PermissionBackend {
 	@Override
 	public List<String> getWorldInheritance(String world) {
 		if (world != null && !world.isEmpty()) {
-			List<String> parentWorlds = this.permissions.getStringList(buildPath("worlds", world, "/inheritance"));
-			if (parentWorlds != null) {
-				return Collections.unmodifiableList(parentWorlds);
+			List<String> parentWorlds = worldInheritanceCache.get(world);
+			if (parentWorlds == null) {
+				synchronized (lock) {
+					parentWorlds = this.permissions.getStringList(buildPath("worlds", world, "inheritance"));
+					if (parentWorlds != null) {
+						parentWorlds = Collections.unmodifiableList(parentWorlds);
+						worldInheritanceCache.put(world, parentWorlds);
+						return parentWorlds;
+					}
+				}
+			} else {
+				return parentWorlds;
 			}
 		}
 
@@ -85,58 +91,75 @@ public class FileBackend extends PermissionBackend {
 
 	@Override
 	public Map<String, List<String>> getAllWorldInheritance() {
-		ConfigurationSection worldsSection = this.permissions.getConfigurationSection("worlds");
-		if (worldsSection == null) {
-			return Collections.emptyMap();
-		}
+		synchronized (lock) {
+			ConfigurationSection worldsSection = this.permissions.getConfigurationSection("worlds");
+			if (worldsSection == null) {
+				return Collections.emptyMap();
+			}
 
-		Map<String, List<String>> ret = new HashMap<>();
-		for (String world : worldsSection.getKeys(false)) {
-			ret.put(world, getWorldInheritance(world));
+			Map<String, List<String>> ret = new HashMap<>();
+			for (String world : worldsSection.getKeys(false)) {
+				ret.put(world, getWorldInheritance(world));
+			}
+			return Collections.unmodifiableMap(ret);
 		}
-		return Collections.unmodifiableMap(ret);
 	}
 
 	@Override
-	public void setWorldInheritance(String world, List<String> parentWorlds) {
+	public void setWorldInheritance(final String world, List<String> rawParentWorlds) {
 		if (world == null || world.isEmpty()) {
 			return;
 		}
+		final List<String> parentWorlds = new ArrayList<>(rawParentWorlds);
+		worldInheritanceCache.put(world, parentWorlds);
 
-		this.permissions.set(buildPath("worlds", world, "inheritance"), parentWorlds);
-		this.save();
+		getExecutor().execute(new Runnable() {
+			@Override
+			public void run() {
+				synchronized (lock) {
+					permissions.set(buildPath("worlds", world, "inheritance"), parentWorlds);
+					save();
+				}
+			}
+		});
 	}
 
 	@Override
 	public PermissionsUserData getUserData(String userName) {
-		final CachingUserData data = new CachingUserData(new FileData("users", userName, this.permissions, "group"), executor, lock);
-		data.load();
-		return data;
+		synchronized (lock) {
+			final CachingUserData data = new CachingUserData(new FileData("users", userName, this.permissions, "group"), getExecutor(), lock);
+			data.load();
+			return data;
+		}
 	}
 
 	@Override
 	public PermissionsGroupData getGroupData(String groupName) {
-		final CachingGroupData data = new CachingGroupData(new FileData("groups", groupName, this.permissions, "inheritance"), executor, lock);
-		data.load();
-		return data;
+		synchronized (lock) {
+			final CachingGroupData data = new CachingGroupData(new FileData("groups", groupName, this.permissions, "inheritance"), getExecutor(), lock);
+			data.load();
+			return data;
+		}
 	}
 
 	@Override
 	public boolean hasUser(String userName) {
-		if (this.permissions.isConfigurationSection(buildPath("users", userName))) {
-			return true;
-		}
-
-		ConfigurationSection userSection = this.permissions.getConfigurationSection("users");
-		if (userSection != null) {
-			for (String name : userSection.getKeys(false)) {
-				if (userName.equalsIgnoreCase(name)) {
-					return true;
-				}
+		synchronized (lock) {
+			if (this.permissions.isConfigurationSection(buildPath("users", userName))) {
+				return true;
 			}
 
+			ConfigurationSection userSection = this.permissions.getConfigurationSection("users");
+			if (userSection != null) {
+				for (String name : userSection.getKeys(false)) {
+					if (userName.equalsIgnoreCase(name)) {
+						return true;
+					}
+				}
+
+			}
+			return false;
 		}
-		return false;
 	}
 
 	@Override
@@ -158,66 +181,44 @@ public class FileBackend extends PermissionBackend {
 	}
 
 	@Override
-	public Set<String> getDefaultGroupNames(String worldName) {
-		ConfigurationSection groups = this.permissions.getConfigurationSection("groups");
-
-		if (groups == null) {
-			return Collections.emptySet();
-		}
-
-		Set<String> names = new HashSet<>();
-
-		String defaultGroupProperty = "default";
-		if (worldName != null) {
-			defaultGroupProperty = buildPath("worlds", worldName, defaultGroupProperty);
-		}
-
-		for (Map.Entry<String, Object> entry : groups.getValues(false).entrySet()) {
-			if (entry.getValue() instanceof ConfigurationSection) {
-				ConfigurationSection groupSection = (ConfigurationSection) entry.getValue();
-
-				if (groupSection.getBoolean(defaultGroupProperty, false)) {
-					names.add(entry.getKey());
-				}
-			}
-		}
-
-		return Collections.unmodifiableSet(names);
-	}
-
-	@Override
 	public Collection<String> getUserIdentifiers() {
-		ConfigurationSection users = this.permissions.getConfigurationSection("users");
-		return users != null ? users.getKeys(false) : Collections.<String>emptyList();
+		synchronized (lock) {
+			ConfigurationSection users = this.permissions.getConfigurationSection("users");
+			return users != null ? users.getKeys(false) : Collections.<String>emptyList();
+		}
 	}
 
 	@Override
 	public Collection<String> getUserNames() {
-		ConfigurationSection users = this.permissions.getConfigurationSection("users");
+		synchronized (lock) {
+			ConfigurationSection users = this.permissions.getConfigurationSection("users");
 
-		if (users == null) {
-			return Collections.emptySet();
-		}
+			if (users == null) {
+				return Collections.emptySet();
+			}
 
-		Set<String> userNames = new HashSet<>();
+			Set<String> userNames = new HashSet<>();
 
-		for (Map.Entry<String, Object> entry : users.getValues(false).entrySet()) {
-			if (entry.getValue() instanceof ConfigurationSection) {
-				ConfigurationSection userSection = (ConfigurationSection) entry.getValue();
+			for (Map.Entry<String, Object> entry : users.getValues(false).entrySet()) {
+				if (entry.getValue() instanceof ConfigurationSection) {
+					ConfigurationSection userSection = (ConfigurationSection) entry.getValue();
 
-				String name = userSection.getString(buildPath("options", "name"));
-				if (name != null) {
-					userNames.add(name);
+					String name = userSection.getString(buildPath("options", "name"));
+					if (name != null) {
+						userNames.add(name);
+					}
 				}
 			}
+			return Collections.unmodifiableSet(userNames);
 		}
-		return Collections.unmodifiableSet(userNames);
 	}
 
 	@Override
 	public Collection<String> getGroupNames() {
-		ConfigurationSection groups = this.permissions.getConfigurationSection("groups");
-		return groups != null ? groups.getKeys(false) : Collections.<String>emptySet();
+		synchronized (lock) {
+			ConfigurationSection groups = this.permissions.getConfigurationSection("groups");
+			return groups != null ? groups.getKeys(false) : Collections.<String>emptySet();
+		}
 	}
 
 	public static String buildPath(String... path) {
@@ -250,10 +251,12 @@ public class FileBackend extends PermissionBackend {
 		try {
 			newPermissions.load();
 			getLogger().info("Permissions file successfully reloaded");
+			worldInheritanceCache.clear();
 			this.permissions = newPermissions;
 		} catch (FileNotFoundException e) {
 			if (this.permissions == null) {
 				// First load, load even if the file doesn't exist
+				worldInheritanceCache.clear();
 				this.permissions = newPermissions;
 				initNewConfiguration();
 			}
@@ -290,23 +293,21 @@ public class FileBackend extends PermissionBackend {
 
 	@Override
 	public void loadFrom(PermissionBackend backend) {
-		final boolean oldSaveSuppr = this.permissions.isSaveSuppressed();
-		this.permissions.setSaveSuppressed(true);
+		this.setPersistent(false);
 		try {
 			super.loadFrom(backend);
 		} finally {
-			this.permissions.setSaveSuppressed(oldSaveSuppr);
+			this.setPersistent(true);
 		}
 		save();
 	}
 
 	@Override
-	public void close() throws PermissionBackendException {
-		executor.shutdown();
-		try {
-			executor.awaitTermination(50 * 10, TimeUnit.MILLISECONDS);
-		} catch (InterruptedException e) {
-			throw new PermissionBackendException(e);
+	public void setPersistent(boolean persistent) {
+		super.setPersistent(persistent);
+		this.permissions.setSaveSuppressed(!persistent);
+		if (persistent) {
+			this.save();
 		}
 	}
 
